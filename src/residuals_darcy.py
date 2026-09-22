@@ -1,9 +1,13 @@
-import torch
-from src.grad_utils import *
+import math
+
 import einops as ein
-        
+import torch
+
+from src.grad_utils import *
+
+
 class ResidualsDarcy:
-    def __init__(self, model, fd_acc, pixels_per_dim, pixels_at_boundary, reverse_d1, device = 'cpu', bcs = 'none', domain_length = 1., residual_grad_guidance = False, use_ddim_x0 = False, ddim_steps = 0):
+    def __init__(self, model, fd_acc, pixels_per_dim, pixels_at_boundary, reverse_d1, device = 'cpu', bcs = 'none', domain_length = 1., residual_grad_guidance = False, use_ddim_x0 = False, ddim_steps = 0, correction_method='legacy'):
         """
         Initialize the residual evaluation.
 
@@ -12,6 +16,13 @@ class ResidualsDarcy:
         :param E: Young's Modulus.
         :param nu: Poisson's Ratio.
         """
+
+        if correction_method not in ("legacy", "backtracking"):
+            raise ValueError(
+                "correction_method must be 'legacy' or 'backtracking'."
+            )
+        self.correction_method = correction_method
+
         self.gov_eqs = 'darcy'
         self.model = model
         self.pixels_at_boundary = pixels_at_boundary
@@ -208,6 +219,9 @@ class ResidualsDarcy:
         
     def residual_correction(self, x0_pred_in):
 
+        if self.correction_method == "backtracking":
+            return self.residual_correction_backtracking(x0_pred_in)
+
         # Ensure the model output is in the correct shape
         assert len(x0_pred_in.shape) == 3, 'Model output must be a tensor shaped as b_xy_c.'
 
@@ -238,6 +252,118 @@ class ResidualsDarcy:
         # compute residual again based on correction
         residual_corrected = self.compute_residual(generalized_b_xy_c_to_image(x0_pred_in), pass_through = True)['residual']
         return x0_pred_in, residual_corrected
+
+    @torch.enable_grad()
+    def residual_correction_backtracking(
+        self,
+        x0_pred_in,
+        initial_step=1.0,
+        contraction=0.5,
+        armijo=1e-4,
+        max_backtracks=30,
+    ):
+        """Correct pressure using per-sample Armijo backtracking.
+
+        Minimize half the mean squared residual, including boundary
+        residuals, while keeping permeability fixed.
+
+        The input is not modified. Samples for which no acceptable step
+        is found are returned unchanged. No full Jacobian is constructed.
+
+        Args:
+            x0_pred_in: Floating tensor shaped (batch, pixels**2, 2).
+            initial_step: Initial gradient-descent step size.
+            contraction: Step reduction factor, strictly between 0 and 1.
+            armijo: Sufficient-decrease factor, strictly between 0 and 1.
+            max_backtracks: Maximum number of step reductions.
+
+        Returns:
+            Detached corrected samples and their residuals.
+        """
+        expected_shape = (self.pixels_per_dim**2, 2)
+        if (
+            x0_pred_in.ndim != 3
+            or tuple(x0_pred_in.shape[1:]) != expected_shape
+            or x0_pred_in.shape[0] == 0
+        ):
+            raise ValueError(
+                "Expected a nonempty tensor shaped (batch, pixels**2, 2)."
+            )
+        if not torch.is_floating_point(x0_pred_in):
+            raise ValueError("Input must be a floating-point tensor.")
+        if not torch.isfinite(x0_pred_in).all():
+            raise ValueError("Input contains NaN or Inf.")
+        if not math.isfinite(initial_step) or initial_step <= 0:
+            raise ValueError("initial_step must be finite and positive.")
+        if not 0 < contraction < 1:
+            raise ValueError("contraction must be between 0 and 1.")
+        if not 0 < armijo < 1:
+            raise ValueError("armijo must be between 0 and 1.")
+        if (
+            not isinstance(max_backtracks, int)
+            or isinstance(max_backtracks, bool)
+            or max_backtracks < 0
+        ):
+            raise ValueError("max_backtracks must be a nonnegative integer.")
+
+        def evaluate(fields):
+            image = generalized_b_xy_c_to_image(fields)
+            return self.compute_residual(
+                image, pass_through=True
+            )["residual"]
+
+        corrected = x0_pred_in.detach().clone()
+
+        # Each sample has its own objective, gradient and accepted step.
+        for index in range(corrected.shape[0]):
+            original = x0_pred_in[index:index + 1].detach()
+            pressure = original[..., 0].clone().requires_grad_(True)
+            permeability = original[..., 1]
+
+            fields = torch.stack((pressure, permeability), dim=-1)
+            residual = evaluate(fields)
+            objective = 0.5 * residual.square().mean()
+
+            if not torch.isfinite(objective):
+                raise ValueError("Initial residual objective is not finite.")
+
+            gradient, = torch.autograd.grad(objective, pressure)
+            gradient = gradient.detach()
+            gradient_norm_sq = gradient.square().sum()
+
+            if not torch.isfinite(gradient_norm_sq):
+                raise ValueError("Pressure gradient norm is not finite.")
+            if gradient_norm_sq.item() == 0.0:
+                continue
+
+            initial_objective = objective.detach()
+            step = initial_step
+
+            with torch.no_grad():
+                for _ in range(max_backtracks + 1):
+                    trial = original.clone()
+                    trial[..., 0] = pressure.detach() - step * gradient
+
+                    trial_residual = evaluate(trial)
+                    trial_objective = 0.5 * trial_residual.square().mean()
+                    required_decrease = armijo * step * gradient_norm_sq
+
+                    if (
+                        torch.isfinite(trial_objective)
+                        and trial_objective < initial_objective
+                        and trial_objective
+                        <= initial_objective - required_decrease
+                    ):
+                        corrected[index:index + 1] = trial
+                        break
+
+                    step *= contraction
+
+        with torch.no_grad():
+            corrected_residual = evaluate(corrected)
+
+        return corrected.detach(), corrected_residual.detach()
+
         
     # Compute the residual directly so simplify jacfwd call
     def compute_residual_direct(self, x0_output):
@@ -284,4 +410,4 @@ class ResidualsDarcy:
 
         residual_bc = generalized_image_to_b_xy_c(residual_bc)
         residual = torch.cat([eq_0.unsqueeze(-1), residual_bc], dim=-1)
-        return residual 
+        return residual

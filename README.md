@@ -68,12 +68,98 @@ To run the Darcy flow and topology optimization study, the following additional 
 Package | Version (>=)
 :-|:-
 `findiff`                   | `0.10.0`
-`solidspy`                  | `1.0.16`
+`solidspy`                  | `1.1.0.post1`
 `pandas`                    | `2.1.3`
 `einops-exts`               | `0.0.4`
 `rotary_embedding_torch`    | `0.2.3`
 `torchvision`               | `0.15.2`
 `opencv`                    | `4.9.0.80`
+
+## Jacobian-free Darcy residual correction
+
+The Darcy example supports an optional physics-correction method based on
+reverse-mode differentiation and per-sample Armijo backtracking.
+
+For fixed permeability $K$, the method minimizes
+
+$$
+\Phi(p; K) = \frac{1}{2}\operatorname{mean}\left(R(p,K)^2\right)
+$$
+
+where $R(p,K)$ is the discretized Darcy residual. Only the pressure field is
+updated; permeability remains unchanged. The line search accepts a step only
+when it provides sufficient decrease of the objective.
+
+Unlike the original correction method, this implementation does not construct
+the full residual Jacobian. The original `legacy` method remains the default
+for backward compatibility.
+
+To enable the new method in the YAML configuration stored with the selected
+checkpoint:
+
+```yaml
+correction_method: backtracking
+M_correction: 10
+N_correction: 0
+```
+
+### Darcy CPU environment
+
+The tested CPU environment can be installed with:
+
+```bash
+python -m pip install -r requirements-darcy-cpu.txt
+```
+
+The Darcy checkpoint must be downloaded from the model collection linked
+above and placed in:
+
+```text
+trained_models/darcy/PIDM-ME/model/checkpoint_300000.pt
+```
+
+Generate five deterministic samples:
+
+```bash
+python generate_darcy_samples.py
+```
+
+Run the comparison for each sample:
+
+```bash
+for seed in 42 43 44 45 46; do
+  python benchmark_darcy_correction.py \
+    --input trained_models/darcy/PIDM-ME/samples/seed_${seed}.pt \
+    --method legacy --steps 10
+
+  python benchmark_darcy_correction.py \
+    --input trained_models/darcy/PIDM-ME/samples/seed_${seed}.pt \
+    --method backtracking --steps 10
+done
+```
+
+Run the focused test suite:
+
+```bash
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 \
+python -m pytest -q tests/test_darcy_backtracking.py
+```
+
+### Benchmark
+
+The following values are averages over five generated $64 \times 64$ Darcy
+samples, using ten post-sampling correction steps on an Intel i7 MacBook Pro
+CPU with four threads.
+
+| Method | Correction time [s] | Objective reduction | PDE RMS reduction | Final objective |
+|---|---:|---:|---:|---:|
+| Legacy | 48.42 | 19.19% | 13.68% | 4.370e-4 |
+| Backtracking | 1.80 | 27.54% | 20.50% | 3.944e-4 |
+
+The backtracking method reduced the objective for every tested sample while
+keeping permeability unchanged. Boundary RMS changed only marginally on
+average and was not monotonic for every sample. Runtime values are
+hardware-dependent.
 
 ## Citation
 
@@ -87,3 +173,4 @@ booktitle={The Thirteenth International Conference on Learning Representations},
 year={2025},
 url={https://openreview.net/forum?id=tpYeermigp}
 }
+```

@@ -119,7 +119,20 @@ elif gov_eqs == 'mechanics':
 load_model(Path(load_path, 'model', 'checkpoint_' + str(load_model_step) + '.pt'), model)
 
 if gov_eqs == 'darcy':
-    residuals = ResidualsDarcy(model = model, fd_acc = fd_acc, pixels_per_dim = pixels_per_dim, pixels_at_boundary = pixels_at_boundary, reverse_d1 = reverse_d1, device = device, bcs = bcs, domain_length = domain_length, residual_grad_guidance = residual_grad_guidance, use_ddim_x0 = use_ddim_x0, ddim_steps = ddim_steps)
+    residuals = ResidualsDarcy(
+        model=model,
+        fd_acc=fd_acc,
+        pixels_per_dim=pixels_per_dim,
+        pixels_at_boundary=pixels_at_boundary,
+        reverse_d1=reverse_d1,
+        device=device,
+        bcs=bcs,
+        domain_length=domain_length,
+        residual_grad_guidance=residual_grad_guidance,
+        use_ddim_x0=use_ddim_x0,
+        ddim_steps=ddim_steps,
+        correction_method=config.get("correction_method", "legacy"),
+    )
 elif gov_eqs == 'mechanics':
     residuals = ResidualsMechanics(model = model, pixels_per_dim = pixels_per_dim, pixels_at_boundary = pixels_at_boundary, device = device, bcs = bcs, no_BC_folder = './data/mechanics/solidspy_k_no_BC/', topopt_eval = topopt_eval, use_ddim_x0 = use_ddim_x0, ddim_steps = ddim_steps)
 else:

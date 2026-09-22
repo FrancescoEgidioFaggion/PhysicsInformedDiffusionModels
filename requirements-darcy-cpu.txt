@@ -1,0 +1,16 @@
+einops==0.6.1
+einops-exts==0.0.4
+findiff==0.10.0
+imageio==2.37.4
+matplotlib==3.11.2
+numpy==1.26.4
+opencv-python==4.9.0.80
+pandas==3.0.6
+PyYAML==6.0.3
+rotary-embedding-torch==0.2.3
+scipy==1.17.1
+solidspy==1.1.0.post1
+torch==2.2.2
+torchvision==0.17.2
+tqdm==4.70.1
+pytest==9.1.1
