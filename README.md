@@ -83,25 +83,46 @@ reverse-mode differentiation and per-sample Armijo backtracking.
 For fixed permeability $K$, the method minimizes
 
 $$
-\Phi(p; K) = \frac{1}{2}\operatorname{mean}\left(R(p,K)^2\right)
+\Phi(p;K)=\frac{1}{2M}\sum_{i=1}^{M}R_i(p,K)^2
 $$
 
-where $R(p,K)$ is the discretized Darcy residual. Only the pressure field is
-updated; permeability remains unchanged. The line search accepts a step only
+where $R_i(p,K)$ denotes one scalar entry of the flattened PDE-and-boundary
+residual tensor and $M$ is the total number of such entries.
+
+Only the pressure field is updated; permeability remains unchanged. The line search accepts a step only
 when it provides sufficient decrease of the objective.
 
 Unlike the original correction method, this implementation does not construct
 the full residual Jacobian. The original `legacy` method remains the default
 for backward compatibility.
 
-To enable the new method in the YAML configuration stored with the selected
-checkpoint:
+### Enabling the correction in `sample.py`
+
+`sample.py` loads its configuration from the YAML file stored alongside the
+selected checkpoint, for example:
+
+```text
+trained_models/darcy/PIDM-ME/model/model.yaml
+```
+
+To apply ten backtracking corrections after the reverse diffusion process has
+produced the final sample, add or update:
 
 ```yaml
 correction_method: backtracking
 M_correction: 10
 N_correction: 0
 ```
+
+`correction_method` selects either the original `legacy` implementation or the
+new `backtracking` implementation. `M_correction` is the number of correction
+steps applied to the final generated sample. `N_correction` is the number of
+final reverse-diffusion timesteps at which correction is applied; setting it to
+zero disables correction inside the reverse process.
+
+The standalone benchmark does not read these three options. Its method and
+number of post-sampling corrections are selected through `--method` and
+`--steps`.
 
 ### Darcy CPU environment
 
@@ -118,7 +139,7 @@ above and placed in:
 trained_models/darcy/PIDM-ME/model/checkpoint_300000.pt
 ```
 
-Generate five deterministic samples:
+Generate five samples using fixed random seeds (42–46):
 
 ```bash
 python generate_darcy_samples.py
